@@ -619,6 +619,48 @@ std::string options_fingerprint(const Options& o) {
     return j.dump();
 }
 
+
+// Staged build: compile every translation unit, then link. The scaffolding
+// units (driver, calls, reproducer) pull in nlohmann/json.hpp, and they are
+// scaffolding rather than the code under test, so they compile at -O0; the
+// project's own sources keep the -O1 that fault frames and timings expect.
+struct StagedBuild {
+    std::vector<std::string> common;
+    std::string root;
+    std::string output;
+    int code = 0;
+
+    bool compile(const std::string& src, const std::string& obj, const char* opt_level) {
+        std::vector<std::string> argv = common;
+        argv.push_back(opt_level);
+        argv.push_back("-c");
+        argv.push_back(src);
+        argv.push_back("-o");
+        argv.push_back(obj);
+        output += run_capture(argv, root, code);
+        return code == 0;
+    }
+
+    bool link(const std::vector<std::string>& objs, const std::string& bin, const Options& opt,
+              bool coverage) {
+        std::vector<std::string> argv = {opt.cxx};
+        for (const auto& s : opt.sanitize) argv.push_back("-fsanitize=" + s);
+        // The instrumented objects need the profiling runtime at link time.
+        if (coverage) argv.push_back("-fprofile-instr-generate");
+        for (const auto& f : opt.cxxFlags) argv.push_back(f);
+        for (const auto& o : objs) argv.push_back(o);
+        argv.push_back("-o");
+        argv.push_back(bin);
+        if (!opt.libraries.empty()) {
+            argv.push_back("-Wl,--start-group");
+            for (const auto& l : opt.libraries) argv.push_back(l);
+            argv.push_back("-Wl,--end-group");
+        }
+        for (const auto& f : opt.linkFlags) argv.push_back(f);
+        output += run_capture(argv, root, code);
+        return code == 0;
+    }
+};
 } // namespace
 
 bool build_driver(const Inventory& inv, const Options& opt, Driver& out, std::string& error) {
@@ -658,28 +700,33 @@ bool build_driver(const Inventory& inv, const Options& opt, Driver& out, std::st
             error = "cannot write " + callsPath;
             return false;
         } else {
-            std::vector<std::string> argv = {opt.cxx, "-std=" + opt.std, "-g", "-O1",
-                                             "-fno-omit-frame-pointer"};
-            if (opt.coverage)
-                argv.push_back("-fprofile-instr-generate"), argv.push_back("-fcoverage-mapping");
-            for (const auto& s : opt.sanitize) argv.push_back("-fsanitize=" + s);
-            for (const auto& f : opt.cxxFlags) argv.push_back(f);
-            argv.push_back("-I" + out.dir);
-            if (!vendor_include().empty()) argv.push_back("-I" + vendor_include());
-            argv.push_back("-I" + inv.root);
-            argv.push_back(out.dir + "/afz_driver.cpp");
-            argv.push_back(callsPath);
-            for (const auto& s : opt.sources) argv.push_back(s);
-            argv.push_back("-o");
-            argv.push_back(out.bin);
-            if (!opt.libraries.empty()) {
-                argv.push_back("-Wl,--start-group");
-                for (const auto& l : opt.libraries) argv.push_back(l);
-                argv.push_back("-Wl,--end-group");
+            StagedBuild sb;
+            sb.root = inv.root;
+            sb.common = {opt.cxx, "-std=" + opt.std, "-g", "-fno-omit-frame-pointer"};
+            if (opt.coverage) {
+                sb.common.push_back("-fprofile-instr-generate");
+                sb.common.push_back("-fcoverage-mapping");
             }
-            for (const auto& f : opt.linkFlags) argv.push_back(f);
-            int code = 0;
-            lastOutput = run_capture(argv, inv.root, code);
+            for (const auto& s : opt.sanitize) sb.common.push_back("-fsanitize=" + s);
+            for (const auto& f : opt.cxxFlags) sb.common.push_back(f);
+            sb.common.push_back("-I" + out.dir);
+            if (!vendor_include().empty()) sb.common.push_back("-I" + vendor_include());
+            sb.common.push_back("-I" + inv.root);
+            std::vector<std::string> objs;
+            bool ok = sb.compile(out.dir + "/afz_driver.cpp", out.dir + "/build/afz_driver.o",
+                                 "-O0");
+            if (ok) {
+                objs.push_back(out.dir + "/build/afz_driver.o");
+                ok = sb.compile(callsPath, out.dir + "/build/afz_calls.o", "-O0");
+                if (ok) objs.push_back(out.dir + "/build/afz_calls.o");
+            }
+            for (std::size_t i = 0; ok && i < opt.sources.size(); ++i) {
+                std::string obj = out.dir + "/build/src" + std::to_string(i) + ".o";
+                if (sb.compile(opt.sources[i], obj, "-O1")) objs.push_back(obj);
+            }
+            if (ok) ok = sb.link(objs, out.bin, opt, opt.coverage);
+            lastOutput = sb.output;
+            const int code = ok ? 0 : (sb.code != 0 ? sb.code : 1);
             if (code == 0) {
                 write_file(stampPath, stamp);
                 fresh = true;
@@ -895,24 +942,23 @@ bool compile_repro(const Inventory& inv, const Driver& drv, const Options& opt,
         error = "cannot write " + src;
         return false;
     }
-    std::vector<std::string> argv = {opt.cxx, "-std=" + opt.std, "-g", "-O1",
-                                     "-fno-omit-frame-pointer"};
-    for (const auto& s : opt.sanitize) argv.push_back("-fsanitize=" + s);
-    for (const auto& f : opt.cxxFlags) argv.push_back(f);
-    if (!vendor_include().empty()) argv.push_back("-I" + vendor_include());
-    argv.push_back("-I" + inv.root);
-    argv.push_back(src);
-    for (const auto& s : opt.sources) argv.push_back(s);
-    argv.push_back("-o");
-    argv.push_back(bin);
-    if (!opt.libraries.empty()) {
-        argv.push_back("-Wl,--start-group");
-        for (const auto& l : opt.libraries) argv.push_back(l);
-        argv.push_back("-Wl,--end-group");
+    StagedBuild sb;
+    sb.root = inv.root;
+    sb.common = {opt.cxx, "-std=" + opt.std, "-g", "-fno-omit-frame-pointer"};
+    for (const auto& s : opt.sanitize) sb.common.push_back("-fsanitize=" + s);
+    for (const auto& f : opt.cxxFlags) sb.common.push_back(f);
+    if (!vendor_include().empty()) sb.common.push_back("-I" + vendor_include());
+    sb.common.push_back("-I" + inv.root);
+    std::vector<std::string> objs;
+    bool ok = sb.compile(src, src + ".o", "-O0");
+    if (ok) objs.push_back(src + ".o");
+    for (std::size_t i = 0; ok && i < opt.sources.size(); ++i) {
+        std::string obj = drv.dir + "/build/" + stem + "-src" + std::to_string(i) + ".o";
+        if (sb.compile(opt.sources[i], obj, "-O1")) objs.push_back(obj);
     }
-    for (const auto& f : opt.linkFlags) argv.push_back(f);
-    int code = 0;
-    std::string output = run_capture(argv, inv.root, code);
+    if (ok) ok = sb.link(objs, bin, opt, false);
+    std::string output = sb.output;
+    int code = ok ? 0 : (sb.code != 0 ? sb.code : 1);
     if (code != 0) {
         ::unlink(src.c_str());
         error = "the reproducer does not compile:\n" + tail(output, 4000);
