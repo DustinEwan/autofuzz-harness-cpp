@@ -198,6 +198,24 @@ int main() {
             ++failures;
         }
 
+    // A protocol line must go out even when a value carries raw bytes:
+    // nlohmann throws on invalid UTF-8 unless the replace handler is used,
+    // and a thrown dump is a lost plugin, not a finding.
+    {
+        afzh::json dirty = {{"what", std::string("a\xff" "b")}};
+        std::string line;
+        try {
+            line = afzh::afz_dump(dirty);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "FAIL afz_dump: threw on invalid UTF-8: %s\n", e.what());
+            ++failures;
+        }
+        if (line.find("\xef\xbf\xbd") == std::string::npos) {
+            std::fprintf(stderr, "FAIL afz_dump: the invalid byte was not replaced\n");
+            ++failures;
+        }
+    }
+
     check_rt_header();
     check_generated_encoders();
 
