@@ -908,7 +908,7 @@ RunResult run_call(const Driver& drv, const Tgt& tgt, const json& args, double d
             ::setenv("LLVM_PROFILE_FILE_PERCENT", "1", 0);
         }
         ::setenv("ASAN_OPTIONS", "detect_leaks=0:abort_on_error=0", 0);
-        ::setenv("UBSAN_OPTIONS", "halt_on_error=1:print_stacktrace=0", 0);
+        ::setenv("UBSAN_OPTIONS", "halt_on_error=1:print_stacktrace=1", 0);
         execl(drv.bin.c_str(), "afz-cpp-driver", nullptr);
         _exit(127);
     }

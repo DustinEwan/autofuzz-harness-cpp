@@ -299,8 +299,14 @@ private:
     // `origin`.
     std::string rel_path(const std::string& file) const {
         if (!haveInventory_) return file;
-        const std::string& root = inventory_.root;
-        if (file.compare(0, root.size() + 1, root + "/") == 0)
+        std::string root = inventory_.root;
+        // The engine may hand over a relative root ("." is the common case);
+        // sanitizer frames carry absolute paths, so resolve before comparing.
+        if (!root.empty() && root[0] != '/') {
+            char buf[4096];
+            if (::realpath(root.c_str(), buf)) root = buf;
+        }
+        if (!root.empty() && file.compare(0, root.size() + 1, root + "/") == 0)
             return file.substr(root.size() + 1);
         return file;
     }
