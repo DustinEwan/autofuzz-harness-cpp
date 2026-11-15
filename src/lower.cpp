@@ -263,10 +263,12 @@ LowerResult lower_type(CXType raw, LowerCtx& ctx) {
         CXType pc = clang_getCanonicalType(pointee);
         bool pointeeConst = clang_isConstQualifiedType(pointee) != 0;
         if (pc.kind == CXType_FunctionProto) {
-            std::string ret = strip_qualifiers(type_spelling(clang_getCanonicalType(clang_getResultType(pointee))));
+            // Qualifiers stay: the synthesized signature must match the real
+            // function-pointer type exactly, or the assignment will not compile.
+            std::string ret = type_spelling(clang_getCanonicalType(clang_getResultType(pointee)));
             std::vector<std::string> args;
             for (unsigned i = 0; i < clang_getNumArgTypes(pointee); ++i)
-                args.push_back(strip_qualifiers(type_spelling(clang_getCanonicalType(clang_getArgType(pointee, i)))));
+                args.push_back(type_spelling(clang_getCanonicalType(clang_getArgType(pointee, i))));
             return lower_callable(pointee, canon, "std::function<" + ret + "(" + join(args, ",") + ")>", ctx);
         }
         if (is_byte_kind(pc.kind)) {
@@ -527,6 +529,8 @@ LowerResult lower_record(CXType raw, LowerCtx& ctx) {
     CXCursorKind dk = clang_getCursorKind(decl);
     if (clang_Cursor_isNull(decl) || (dk != CXCursor_StructDecl && dk != CXCursor_ClassDecl))
         return opaque_of(name, name, "the class declaration is not visible or is a union");
+    if (clang_Cursor_isNull(clang_getCursorDefinition(decl)))
+        return opaque_of(name, name, "the class is only forward-declared");
     if (clang_getCursorKind(clang_getCursorSemanticParent(decl)) == CXCursor_ClassTemplate)
         return opaque_of(name, name, "the class is a template instantiation the driver cannot name");
     if (clang_CXXRecord_isAbstract(decl))

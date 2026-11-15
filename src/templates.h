@@ -313,7 +313,7 @@ struct Stub<R(A...)> {
     static R first(A...) {
         if constexpr (!std::is_void_v<R>) return R{};
     }
-    static void thrower(A...) { throw std::runtime_error("afz: stub callback invoked"); }
+    static R thrower(A...) { throw std::runtime_error("afz: stub callback invoked"); }
     static R capture(A...) {
         g_callbacks.push_back("afz: callback invoked");
         if constexpr (!std::is_void_v<R>) return R{};

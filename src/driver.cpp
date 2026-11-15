@@ -44,10 +44,14 @@ std::string cstr(const std::string& s) {
     return out + '"';
 }
 
-// "std::pair<A,B>" -> "pair"; "std::array<T,2>" -> "array".
+// The aggregate's template head without its namespace: pair, tuple, or the
+// whole spelling of an array-like type.
 std::string base_name(std::string_view t) {
-    auto pos = t.find_last_of("<, ");
-    return std::string(t.substr(pos == std::string_view::npos ? 0 : pos + 1));
+    auto lt = t.find('<');
+    std::string head(lt == std::string_view::npos ? t : t.substr(0, lt));
+    auto colon = head.rfind(':');
+    if (colon != std::string::npos) head.erase(0, colon + 1);
+    return head;
 }
 
 class Emitter {
@@ -135,9 +139,12 @@ public:
                 mv += "std::move(__t" + std::to_string(i) + ")";
             }
             std::string base = base_name(b.localType);
-            if (base == "pair") os << indent(ind + 1) << "var = std::make_pair(" << mv << ");\n";
-            else if (base == "tuple") os << indent(ind + 1) << "var = std::make_tuple(" << mv << ");\n";
-            else os << indent(ind + 1) << "var = " << b.localType << "{" << mv << "};\n";
+            if (base == "pair")
+                os << indent(ind + 1) << var << " = std::make_pair(" << mv << ");\n";
+            else if (base == "tuple")
+                os << indent(ind + 1) << var << " = std::make_tuple(" << mv << ");\n";
+            else
+                os << indent(ind + 1) << var << " = " << b.localType << "{" << mv << "};\n";
             os << indent(ind) << "}\n";
             break;
         }
@@ -315,8 +322,24 @@ void emit_object(std::ostream& os, const ObjectDef& o) {
     os << "[[maybe_unused]] static void " << o.builderFn << "(const afz::json& v, "
        << o.qualifiedName << "& out, int depth) {\n";
     os << "    const afz::json& o = afz::obj_of(v);\n";
-    for (const auto& [fname, fbuild] : o.fields) {
-        if (fbuild->kind == Build::Kind::Ref) {
+    for (std::size_t fi = 0; const auto& [fname, fbuild] : o.fields) {
+        ++fi;
+        const std::string slot = std::to_string(fi);
+        if (fbuild->kind == Build::Kind::Fn) {
+            // A field may be std::function or a raw function pointer; the
+            // Stub's conversion operator serves both, exactly as a raw
+            // function-pointer parameter does.
+            std::string sig = fbuild->localType;
+            auto lt = sig.find('<'), gt = sig.rfind('>');
+            std::string inner = (lt != std::string::npos && gt != std::string::npos && gt > lt)
+                                    ? sig.substr(lt + 1, gt - lt - 1)
+                                    : "void()";
+            os << "    { afz::Stub<" << inner << "> __st;\n";
+            os << "      __st.behavior = afz::stub_behavior(afz::field(o, " << cstr(fname)
+               << "));\n";
+            os << "      out." << fname
+               << " = static_cast<typename afz::Stub<" << inner << ">::FnPtr>(__st); }\n";
+        } else if (fbuild->kind == Build::Kind::Ref) {
             os << "    out." << fname << " = nullptr;\n";
             os << "    { const afz::json& __t = afz::field_or_null(o, " << cstr(fname) << ");\n";
             os << "      if (!afz::is_null_node(__t)) {\n";
@@ -326,11 +349,11 @@ void emit_object(std::ostream& os, const ObjectDef& o) {
             os << "        out." << fname << " = __n;\n";
             os << "      } }\n";
         } else if (fbuild->kind == Build::Kind::FieldPtr) {
-            em.build(os, *fbuild, "__fp", "afz::field(o, " + cstr(fname) + ")", 1, Pass::Value,
-                     "out." + fname);
+            em.build(os, *fbuild, "__fp" + slot, "afz::field(o, " + cstr(fname) + ")", 1,
+                     Pass::Value, "out." + fname);
         } else {
-            em.build(os, *fbuild, "__f", "afz::field(o, " + cstr(fname) + ")", 1);
-            os << "    out." << fname << " = std::move(__f);\n";
+            em.build(os, *fbuild, "__f" + slot, "afz::field(o, " + cstr(fname) + ")", 1);
+            os << "    out." << fname << " = std::move(__f" << slot << ");\n";
         }
     }
     os << "}\n";
@@ -347,6 +370,17 @@ void emit_object(std::ostream& os, const ObjectDef& o) {
     os << "\n    })}};\n}\n\n";
 }
 
+// Forward declarations, so a builder or encoder may reference objects that
+// are defined later in the file.
+void emit_object_forwards(std::ostream& os, const std::vector<ObjectDef>& objects) {
+    for (const auto& o : objects) {
+        os << "static void " << o.builderFn << "(const afz::json&, " << o.qualifiedName
+           << "&, int);\n";
+        os << "static afz::json " << o.encoderFn << "(const " << o.qualifiedName << "&, int);\n";
+    }
+    os << "\n";
+}
+
 // The argument expression for one built parameter.
 std::string pass_expr(const Param& p, const std::string& var) {
     switch (p.pass) {
@@ -360,8 +394,16 @@ std::string pass_expr(const Param& p, const std::string& var) {
             ptr += ", static_cast<" + p.lengthType + ">(" + var + ".size())";
         return ptr;
     }
-    case Pass::CStrConst: return var + ".c_str()";
-    case Pass::CStrMut: return var + ".data()";
+    case Pass::CStrConst:
+    case Pass::CStrMut: {
+        // The local is std::string; a byte-typed pointee (uint8_t*, not just
+        // char*) needs its address reinterpreted, exactly like a buffer does.
+        const std::string& pe = p.build->pointee;
+        bool plain = pe.empty() || pe == "char" || pe == "signed char";
+        if (plain) return p.pass == Pass::CStrConst ? var + ".c_str()" : var + ".data()";
+        std::string t = p.pass == Pass::CStrConst ? "const " + pe : pe;
+        return "reinterpret_cast<" + t + "*>(" + var + ".data())";
+    }
     case Pass::Ptr: return "&" + var;
     case Pass::Value:
     case Pass::Ref:
@@ -444,6 +486,7 @@ std::string render_calls(const Inventory& inv, const std::vector<std::string>& d
           "#include <unordered_map>\n#include <unordered_set>\n#include <variant>\n#include <vector>\n\n";
     for (const std::string& h : inv.headers) os << "#include \"" << h << "\"\n";
     os << "\nnamespace afzcalls {\n\n";
+    emit_object_forwards(os, inv.lower.objects);
     for (const auto& o : inv.lower.objects) emit_object(os, o);
 
     std::vector<const Tgt*> kept;
@@ -487,6 +530,7 @@ std::string render_repro(const Inventory& inv, const Tgt& tgt, const json& value
           "#include <cstdio>\n\n";
     for (const std::string& h : inv.headers) os << "#include \"" << h << "\"\n";
     os << "\nnamespace afzcalls {\n\n";
+    emit_object_forwards(os, inv.lower.objects);
     for (const auto& o : inv.lower.objects) emit_object(os, o);
     emit_thunk(os, tgt, 0);
     os << "} // namespace afzcalls\n\n";
@@ -773,9 +817,16 @@ bool build_driver(const Inventory& inv, const Options& opt, Driver& out, std::st
                     error = "the driver does not compile:\n" + tail(lastOutput, 4000);
                     return false;
                 }
-                for (const auto& id : blamed)
-                    if (std::find(dropped.begin(), dropped.end(), id) == dropped.end())
+                std::string ids;
+                for (const auto& id : blamed) {
+                    if (std::find(dropped.begin(), dropped.end(), id) == dropped.end()) {
                         dropped.push_back(id);
+                        ids += id + " ";
+                    }
+                }
+                std::fprintf(stderr, "afz-cpp: round %d dropped [%s]; compiler tail:\n%s\n",
+                             round, ids.c_str(), tail(lastOutput, 1500).c_str());
+                std::fflush(stderr);
             }
         }
         ::flock(lockFd, LOCK_UN);
