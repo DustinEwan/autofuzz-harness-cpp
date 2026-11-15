@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstdio>
@@ -14,6 +15,8 @@
 #include <cstring>
 #include <fstream>
 #include <sstream>
+#include <thread>
+#include <tuple>
 #include <string_view>
 
 #include "lower.h"
@@ -630,15 +633,40 @@ struct StagedBuild {
     std::string output;
     int code = 0;
 
-    bool compile(const std::string& src, const std::string& obj, const char* opt_level) {
-        std::vector<std::string> argv = common;
-        argv.push_back(opt_level);
-        argv.push_back("-c");
-        argv.push_back(src);
-        argv.push_back("-o");
-        argv.push_back(obj);
-        output += run_capture(argv, root, code);
-        return code == 0;
+    // Compile every unit concurrently: the units are independent, and the
+    // slowest one dominates the wall time anyway. Outputs are concatenated
+    // in unit order, so the repair loop's line attribution survives.
+    bool compile_all(const std::vector<std::tuple<std::string, std::string, const char*>>& units,
+                     unsigned cap) {
+        std::vector<std::string> outs(units.size());
+        std::vector<int> codes(units.size(), -1);
+        std::atomic<std::size_t> next{0};
+        auto worker = [&] {
+            for (std::size_t i = next.fetch_add(1); i < units.size(); i = next.fetch_add(1)) {
+                std::vector<std::string> argv = common;
+                argv.push_back(std::get<2>(units[i]));
+                argv.push_back("-c");
+                argv.push_back(std::get<0>(units[i]));
+                argv.push_back("-o");
+                argv.push_back(std::get<1>(units[i]));
+                outs[i] = run_capture(argv, root, codes[i]);
+            }
+        };
+        unsigned n = std::max<std::size_t>(1, std::min<std::size_t>(cap, units.size()));
+        std::vector<std::thread> pool;
+        pool.reserve(n);
+        for (unsigned t = 0; t < n; ++t) pool.emplace_back(worker);
+        for (auto& t : pool) t.join();
+        bool ok = true;
+        for (std::size_t i = 0; i < units.size(); ++i) {
+            output += outs[i];
+            if (codes[i] != 0) {
+                if (ok) code = codes[i] > 0 ? codes[i] : 1;
+                ok = false;
+            }
+        }
+        if (ok) code = 0;
+        return ok;
     }
 
     bool link(const std::vector<std::string>& objs, const std::string& bin, const Options& opt,
@@ -712,18 +740,17 @@ bool build_driver(const Inventory& inv, const Options& opt, Driver& out, std::st
             sb.common.push_back("-I" + out.dir);
             if (!vendor_include().empty()) sb.common.push_back("-I" + vendor_include());
             sb.common.push_back("-I" + inv.root);
+            std::vector<std::tuple<std::string, std::string, const char*>> units;
+            units.emplace_back(out.dir + "/afz_driver.cpp", out.dir + "/build/afz_driver.o",
+                               "-O0");
+            units.emplace_back(callsPath, out.dir + "/build/afz_calls.o", "-O0");
+            for (std::size_t i = 0; i < opt.sources.size(); ++i)
+                units.emplace_back(opt.sources[i],
+                                   out.dir + "/build/src" + std::to_string(i) + ".o", "-O1");
+            bool ok = sb.compile_all(units, std::thread::hardware_concurrency());
             std::vector<std::string> objs;
-            bool ok = sb.compile(out.dir + "/afz_driver.cpp", out.dir + "/build/afz_driver.o",
-                                 "-O0");
-            if (ok) {
-                objs.push_back(out.dir + "/build/afz_driver.o");
-                ok = sb.compile(callsPath, out.dir + "/build/afz_calls.o", "-O0");
-                if (ok) objs.push_back(out.dir + "/build/afz_calls.o");
-            }
-            for (std::size_t i = 0; ok && i < opt.sources.size(); ++i) {
-                std::string obj = out.dir + "/build/src" + std::to_string(i) + ".o";
-                if (sb.compile(opt.sources[i], obj, "-O1")) objs.push_back(obj);
-            }
+            if (ok)
+                for (const auto& u : units) objs.push_back(std::get<1>(u));
             if (ok) ok = sb.link(objs, out.bin, opt, opt.coverage);
             lastOutput = sb.output;
             const int code = ok ? 0 : (sb.code != 0 ? sb.code : 1);
@@ -949,13 +976,15 @@ bool compile_repro(const Inventory& inv, const Driver& drv, const Options& opt,
     for (const auto& f : opt.cxxFlags) sb.common.push_back(f);
     if (!vendor_include().empty()) sb.common.push_back("-I" + vendor_include());
     sb.common.push_back("-I" + inv.root);
+    std::vector<std::tuple<std::string, std::string, const char*>> units;
+    units.emplace_back(src, src + ".o", "-O0");
+    for (std::size_t i = 0; i < opt.sources.size(); ++i)
+        units.emplace_back(opt.sources[i],
+                           drv.dir + "/build/" + stem + "-src" + std::to_string(i) + ".o", "-O1");
+    bool ok = sb.compile_all(units, std::thread::hardware_concurrency());
     std::vector<std::string> objs;
-    bool ok = sb.compile(src, src + ".o", "-O0");
-    if (ok) objs.push_back(src + ".o");
-    for (std::size_t i = 0; ok && i < opt.sources.size(); ++i) {
-        std::string obj = drv.dir + "/build/" + stem + "-src" + std::to_string(i) + ".o";
-        if (sb.compile(opt.sources[i], obj, "-O1")) objs.push_back(obj);
-    }
+    if (ok)
+        for (const auto& u : units) objs.push_back(std::get<1>(u));
     if (ok) ok = sb.link(objs, bin, opt, false);
     std::string output = sb.output;
     int code = ok ? 0 : (sb.code != 0 ? sb.code : 1);
