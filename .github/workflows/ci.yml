@@ -1,0 +1,63 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  # The plugin's own tests: the sha256 and targetId derivations against
+  # reference vectors, and the harness.options schema including its unknown-key
+  # report. They run on the library target, so they need the same toolchain
+  # the plugin does: clang, libclang, cmake, ninja.
+  harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libclang-dev cmake ninja-build
+
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build
+
+      - name: Tests
+        run: ctest --test-dir build --output-on-failure
+
+  # The conformance gate through the product command: `afz install-harness`
+  # builds the plugin, renders the fixture with the emitter, drives the suite,
+  # and prints the report. Linux only, like the harness itself: the coverage
+  # design reads ELF profiling sections and the driver assumes /proc.
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libclang-dev cmake ninja-build
+
+      - name: Install afz
+        run: cargo install --git https://github.com/DustinEwan/autofuzz.git afz-cli --locked
+
+      # The report goes to a file even when the suite fails, so a failure
+      # prints its own violations here instead of leaving the log with only
+      # the summary line.
+      - name: Validate
+        run: afz install-harness "$GITHUB_WORKSPACE" --json > report.json || { jq '.violations' report.json; exit 1; }
+
+      # The goldens this repository publishes: zero violations, all twelve
+      # template properties passing - C++ realizes every one of them - and
+      # the fixture validator agreeing on all seven source-shaped ids.
+      - name: Assert the report
+        run: |
+          jq -e '((.violations | length) == 0)
+                 and ((.template.properties | map(select(.verdict == "pass") | .id) | sort) == ["crash-unguarded","coverage-digest-live","deadline-sleep","guard-refusal","method-receiver","opaque-return","private-symbol","reproducer-script","stdout-purity","unbuildable-symbol","unconstructible-receiver","unrepresentable-symbol"])
+                 and ((.template.properties | map(select(.verdict == "not-applicable")) | length) == 0)' report.json
+          jq -e '((.validator.properties | map(select(.verdict == "pass")) | length) == 7)
+                 and ((.validator.properties | map(select(.verdict == "fail")) | length) == 0)' report.json

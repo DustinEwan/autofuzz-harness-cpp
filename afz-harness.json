@@ -1,0 +1,10 @@
+{
+  "name": "cpp",
+  "install": [],
+  "build": [
+    ["cmake", "-S", ".", "-B", "build", "-G", "Ninja"],
+    ["cmake", "--build", "build"]
+  ],
+  "command": ["build/afz-cpp", "--stdio"],
+  "conformance": { "emitter": ["build/afz-cpp-emit"], "deadlineMs": 2500 }
+}
