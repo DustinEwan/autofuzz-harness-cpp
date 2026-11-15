@@ -327,6 +327,6 @@ int main(int argc, char** argv) {
     clang_disposeIndex(index);
     json out{{"version", 1}, {"properties", json::array()}};
     for (const auto& p : report.properties) out["properties"].push_back(p);
-    std::printf("%s\n", out.dump().c_str());
+    std::printf("%s\n", afzh::afz_dump(out).c_str());
     return 0;
 }

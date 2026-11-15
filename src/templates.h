@@ -33,8 +33,14 @@ struct BuildError {
 
 [[noreturn]] inline void fail(const std::string& m) { throw BuildError{m}; }
 
+// Serialize with replacement instead of throwing on invalid UTF-8: target
+// strings can hold raw bytes, and a driver must answer, not die.
+inline std::string afz_dump(const json& v) {
+    return v.dump(-1, ' ', false, json::error_handler_t::replace);
+}
+
 inline std::string show(const json& v) {
-    std::string text = v.dump();
+    std::string text = afz_dump(v);
     if (text.size() > 120) text = text.substr(0, 120) + "...";
     return text;
 }
@@ -86,8 +92,16 @@ inline long long i_of(const json& v) {
             std::size_t used = 0;
             long long n = std::stoll(s, &used);
             if (used == s.size()) return n;
-            double d = std::stod(s);
-            return i_of(json(d));
+        } catch (const std::out_of_range&) {
+            // A decimal wider than the type saturates, as the float path
+            // does; a type boundary stays a value, never a crash.
+            return s.find('-') == 0 ? (-9223372036854775807LL - 1) : 9223372036854775807LL;
+        } catch (...) {
+        }
+        try {
+            return i_of(json(std::stod(s)));
+        } catch (const std::out_of_range&) {
+            return s.find('-') == 0 ? (-9223372036854775807LL - 1) : 9223372036854775807LL;
         } catch (...) {
         }
     }
@@ -112,8 +126,14 @@ inline unsigned long long u_of(const json& v) {
             std::size_t used = 0;
             unsigned long long n = std::stoull(s, &used);
             if (used == s.size()) return n;
-            double d = std::stod(s);
-            return u_of(json(d));
+        } catch (const std::out_of_range&) {
+            return s.find('-') == 0 ? 0ULL : 18446744073709551615ULL;
+        } catch (...) {
+        }
+        try {
+            return u_of(json(std::stod(s)));
+        } catch (const std::out_of_range&) {
+            return s.find('-') == 0 ? 0ULL : 18446744073709551615ULL;
         } catch (...) {
         }
     }
@@ -470,7 +490,7 @@ int main() {
     } catch (...) {
         out = {{"status", "throw-unknown"}};
     }
-    write_result(out.dump());
+    write_result(afz::afz_dump(out));
     return 0;
 }
 )CPP";

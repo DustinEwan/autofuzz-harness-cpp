@@ -535,7 +535,7 @@ std::string render_repro(const Inventory& inv, const Tgt& tgt, const json& value
     emit_thunk(os, tgt, 0);
     os << "} // namespace afzcalls\n\n";
     // A raw-string delimiter that cannot collide with the embedded JSON.
-    std::string body = values.dump();
+    std::string body = afz_dump(values);
     std::string delim = "AFZV";
     while (body.find(")" + delim + "(") != std::string::npos) delim += "x";
     os << "int main() {\n";
@@ -546,7 +546,7 @@ std::string render_repro(const Inventory& inv, const Tgt& tgt, const json& value
     os << "    catch (const afz::BuildError& e) { out = {{\"status\",\"error\"},{\"message\",e.message}}; }\n";
     os << "    catch (const std::exception& e) { out = {{\"status\",\"throw\"},{\"what\",e.what()}}; }\n";
     os << "    catch (...) { out = {{\"status\",\"throw-unknown\"}}; }\n";
-    os << "    std::printf(\"%s\\n\", out.dump().c_str());\n";
+    os << "    std::printf(\"%s\\n\", afz::afz_dump(out).c_str());\n";
     os << "    std::fflush(stdout);\n";
     os << "    std::string s = out.is_object() && out.contains(\"status\")\n";
     os << "                      ? out[\"status\"].get<std::string>() : \"\";\n";
@@ -663,7 +663,7 @@ std::string options_fingerprint(const Options& o) {
            {"linkFlags", o.linkFlags},
            {"sanitize", o.sanitize},
            {"coverage", o.coverage}};
-    return j.dump();
+    return afz_dump(j);
 }
 
 
@@ -754,7 +754,10 @@ bool build_driver(const Inventory& inv, const Options& opt, Driver& out, std::st
         std::vector<std::pair<std::string, std::pair<int, int>>> spans;
         std::string calls = render_calls(inv, dropped, spans);
         std::string callsPath = out.dir + "/afz_calls.cpp";
-        std::string stamp = sha256_hex(calls + "\0" + options_fingerprint(opt));
+        // The stamp covers the templates too: a plugin upgrade changes the
+        // runtime header and the driver entry without touching afz_calls.cpp.
+        std::string stamp = sha256_hex(calls + "\0" + options_fingerprint(opt) + "\0" +
+                                       templates::kRtHeader + templates::kDriverMain);
         std::string stampPath = out.dir + "/build/afz.stamp";
         bool fresh = false;
         int lockFd = ::open((out.dir + "/build/afz.lock").c_str(), O_CREAT | O_RDWR, 0644);
@@ -854,7 +857,7 @@ RunResult run_call(const Driver& drv, const Tgt& tgt, const json& args, double d
                    const std::string& profraw) {
     RunResult res;
     json request{{"call", tgt.id}, {"args", args}};
-    std::string input = request.dump();
+    std::string input = afz_dump(request);
 
     int inPipe[2], outPipe[2], errPipe[2], fd3Pipe[2];
     if (pipe(inPipe) || pipe(outPipe) || pipe(errPipe) || pipe(fd3Pipe)) {
@@ -1078,7 +1081,7 @@ std::string summarize(const Tgt& tgt, const json& values) {
     std::string out = tgt.name + "(";
     for (std::size_t i = 0; i < values.size(); ++i) {
         if (i) out += ", ";
-        std::string s = values[i].dump();
+        std::string s = afz_dump(values[i]);
         if (s.size() > 40) s = s.substr(0, 40) + "...";
         out += s;
     }

@@ -13,6 +13,12 @@ namespace afzh {
 
 using json = nlohmann::json;
 
+// Serialize with replacement instead of throwing on invalid UTF-8: fault
+// messages and values can carry raw bytes; the protocol line must go out.
+inline std::string afz_dump(const json& v) {
+    return v.dump(-1, ' ', false, json::error_handler_t::replace);
+}
+
 // docs/schema/afz-1/request.json and response.json.
 inline constexpr const char* kJsonRpc = "2.0";
 // crates/afz-protocol/src/rpc.rs and docs/harness-authoring.md section 12.

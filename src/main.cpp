@@ -437,7 +437,7 @@ int main() {
                                : 0;
         if (req.is_discarded() || !req.is_object() || !req.contains("method") ||
             !req["method"].is_string()) {
-            write_line_stdout(error_response(id, kParseError, "the request line is not a request").dump());
+            write_line_stdout(afz_dump(error_response(id, kParseError, "the request line is not a request")));
             continue;
         }
         const std::string method = req["method"].get<std::string>();
@@ -454,11 +454,11 @@ int main() {
             else if (method == "ready") result = harness.ready();
             else
                 throw Harness::RpcError{kMethodNotFound, "the cpp harness does not answer " + method};
-            write_line_stdout(ok_response(id, std::move(result)).dump());
+            write_line_stdout(afz_dump(ok_response(id, std::move(result))));
         } catch (const Harness::RpcError& e) {
-            write_line_stdout(error_response(id, e.code, e.message).dump());
+            write_line_stdout(afz_dump(error_response(id, e.code, e.message)));
         } catch (const json::exception& e) {
-            write_line_stdout(error_response(id, kInvalidParams, e.what()).dump());
+            write_line_stdout(afz_dump(error_response(id, kInvalidParams, e.what())));
         }
     }
     return 0;
