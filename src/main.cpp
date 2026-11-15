@@ -294,9 +294,20 @@ private:
         return err.substr(pos, eol == std::string::npos ? std::string::npos : eol - pos);
     }
 
+    // Fault frames are reported relative to the project root, so a frame
+    // inside the target's own code names the same file as the descriptor's
+    // `origin`.
+    std::string rel_path(const std::string& file) const {
+        if (!haveInventory_) return file;
+        const std::string& root = inventory_.root;
+        if (file.compare(0, root.size() + 1, root + "/") == 0)
+            return file.substr(root.size() + 1);
+        return file;
+    }
+
     // ASan writes `    #N 0xADDR in <fn> <file>:<line>:<col>` lines; the
     // suite's crash property needs at least one frame naming a fixture file.
-    static json parse_sanitizer_frames(const std::string& err) {
+    json parse_sanitizer_frames(const std::string& err) {
         json out = json::array();
         std::size_t start = 0;
         while (start < err.size()) {
@@ -326,7 +337,7 @@ private:
                     fn = tail.substr(0, sp);
                 }
             }
-            out.push_back(json{{"file", file},
+            out.push_back(json{{"file", rel_path(file)},
                                {"line", lineNo},
                                {"column", col},
                                {"fnName", fn.empty() ? nullptr : json(fn)}});
@@ -366,7 +377,7 @@ private:
                 catch (...) {}
                 file = file.substr(0, colon);
             }
-            json entry{{"file", file == "??" ? "" : file},
+            json entry{{"file", file == "??" ? "" : rel_path(file)},
                        {"line", line},
                        {"fnName", lines[i] == "??" ? nullptr : json(lines[i])},
                        {"column", 0}};
