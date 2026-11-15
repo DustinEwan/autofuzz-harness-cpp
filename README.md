@@ -9,9 +9,10 @@ and the plugin answers every one of the twelve conformance properties with no pr
 not-applicable.
 
 Discovery never runs your code. It parses the selected files, lowers each parameter and return type
-to a value-tree shape the engine can generate, and reports every symbol it cannot drive with a
-named reason (internal linkage, a non-public member, an unconstructible receiver, an unsupported
-signature). The driver binary is built on the first `prepare`, because building is the honest way to
+to a value-tree shape that the engine can generate, and for every symbol that it cannot call it
+writes a skip entry whose reason says why (internal linkage, a non-public member, an
+unconstructible receiver, an unsupported signature).
+The driver binary is built on the first `prepare`, because building is the honest way to
 answer whether a call can be made; a target whose generated call does not compile is dropped by
 name and its siblings keep running.
 
@@ -31,10 +32,10 @@ afz install-harness https://codeberg.org/StillDeadcode/autofuzz-harness-cpp.git
 
 `afz install-harness` builds the plugin, renders the conformance fixture with this repository's own
 emitter, and drives the whole suite before it records anything. The current tree passes 12 of 12
-template properties with zero violations, and the fixture-side validator agrees on all seven
-source-shaped properties.
+template properties with zero violations, and the fixture-side validator returns the same verdicts
+on all seven source-shaped properties.
 
-A scan project selects the harness and passes the build facts the driver needs:
+A scan project selects the harness and passes the build facts that the driver needs:
 
 ```json
 {
@@ -68,7 +69,7 @@ A scan project selects the harness and passes the build facts the driver needs:
 | `llvmBin` | directory holding `llvm-profdata` and `llvm-addr2line` |
 
 A key outside this table is reported, not ignored: discovery answers with a `discovery-error` skip
-that names the unknown key.
+that reports the unknown key exactly as the file wrote it.
 
 ## How a call runs
 
@@ -82,8 +83,8 @@ so a frame inside the target's own code names the same file as the target descri
 
 `reproducer` renders a standalone `repro.cpp` that calls the target with the recorded values,
 compiles it with the project's own flags, and returns the script only when that build succeeds.
-Compiled reproducers are cached under the project's `.autofuzz` directory, keyed by a hash of the
-script, so a repeated request answers instantly.
+Compiled reproducers are cached under the project's `.autofuzz` directory, under a file name built
+from a hash of the script, so a repeated request answers instantly.
 
 ## Author
 
@@ -97,8 +98,8 @@ afz validate-harness
 
 The tests cover the sha256 `targetId` derivation, the option schema including its unknown-key
 report, and the wire vocabulary: `tests/wire_literals.cpp` compares every literal string and error
-code the plugin can emit against the tables copied from the engine's `docs/schema/afz-1/` schemas,
-with the source file named above each table.
+code that the plugin can emit against the tables copied from the engine's `docs/schema/afz-1/`
+schemas, with the source file recorded above each table.
 
 `afz validate-harness` with no argument validates this checkout: it renders the conformance project
 with `build/afz-cpp-emit`, drives the suite against `build/afz-cpp`, and runs
@@ -117,7 +118,7 @@ validator always judge the same files.
 
 ## The contract
 
-`docs/harness-authoring.md` in the engine repository states the plugin contract. The two rules that
-decide the shape of `src/main.cpp` are restated at the top of that file: stdout is the protocol
+The plugin contract lives in `docs/harness-authoring.md` in the engine repository. The two rules
+that give `src/main.cpp` its form are restated at the top of that file: stdout is the protocol
 channel and nothing else may write to it, and a call that outlives its deadline must be answered
 before the engine cuts the process.
