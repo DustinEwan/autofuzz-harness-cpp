@@ -21,7 +21,6 @@ struct Options {
     std::vector<std::string> sanitize; // subset of address, undefined
     bool coverage = true;
     std::string llvmBin; // empty: fall back to $AFZ_LLVM_BIN, then PATH
-    int jobs = 0;        // 0: std::thread::hardware_concurrency()
 
     // Non-empty when a key outside the schema appeared; the names are exactly
     // what the discovery-error skip must report.

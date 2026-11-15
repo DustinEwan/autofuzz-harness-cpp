@@ -45,7 +45,7 @@ int main() {
     "cxxFlags": ["-DFOO=1"], "sources": ["src/core.cpp"],
     "libraries": ["libcore.a"], "linkFlags": ["-lpthread"],
     "sanitize": ["address", "undefined"], "coverage": false,
-    "llvmBin": "/usr/lib/llvm-21/bin", "jobs": 3
+    "llvmBin": "/usr/lib/llvm-21/bin"
   }},
   "output": { "dir": ".work" }
 })");
@@ -58,17 +58,17 @@ int main() {
         check(o.libraries == std::vector<std::string>{"libcore.a"}, "libraries");
         check(o.sanitize == std::vector<std::string>{"address", "undefined"}, "sanitize");
         check(!o.coverage, "coverage off");
-        check(o.llvmBin == "/usr/lib/llvm-21/bin" && o.jobs == 3, "llvmBin and jobs");
+        check(o.llvmBin == "/usr/lib/llvm-21/bin", "llvmBin");
         check(afzh::load_output_dir(p) == ".work", "output.dir");
     }
 
     // A typo is reported by name, never silently ignored.
     {
         write_file(dir / "typo.json",
-                   R"({"harness": {"options": {"libraires": ["x"], "jobs": 2}}})");
+                   R"({"harness": {"options": {"libraires": ["x"], "coverage": false}}})");
         afzh::Options o = afzh::load_options((dir / "typo.json").string());
         check(o.unknown.size() == 1 && o.unknown[0] == "libraires", "typo reported by name");
-        check(o.jobs == 2, "valid keys still apply");
+        check(!o.coverage, "valid keys still apply");
     }
 
     // Malformed JSON: an error, not a crash.

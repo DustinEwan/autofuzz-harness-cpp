@@ -55,7 +55,7 @@ Options load_options(const std::string& configPath) {
         return opt;
     }
     static const char* known[] = {"cxx", "std", "cxxFlags", "sources", "libraries",
-                                  "linkFlags", "sanitize", "coverage", "llvmBin", "jobs"};
+                                  "linkFlags", "sanitize", "coverage", "llvmBin"};
     for (auto& [key, value] : o.items()) {
         bool found = false;
         for (const char* k : known)
@@ -66,7 +66,6 @@ Options load_options(const std::string& configPath) {
         get(o, "cxx", opt.cxx);
         get(o, "std", opt.std);
         get(o, "coverage", opt.coverage);
-        get(o, "jobs", opt.jobs);
         get_strings(o, "cxxFlags", opt.cxxFlags);
         get_strings(o, "sources", opt.sources);
         get_strings(o, "libraries", opt.libraries);
