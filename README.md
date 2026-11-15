@@ -86,6 +86,32 @@ compiles it with the project's own flags, and returns the script only when that 
 Compiled reproducers are cached under the project's `.autofuzz` directory, under a file name built
 from a hash of the script, so a repeated request answers instantly.
 
+## Array parameters and count folding
+
+C-array APIs carry their length three ways, and the driver builds each so that the
+callee can never be handed fewer elements than the count it was given. A parameter
+counts as a length when its name is `n`, `len`, `length`, `count`, `size`, `numel`,
+`nelem`, `nbytes`, or `bytes`, as a whole name or an underscore component (`n_words`
+counts; `kind` does not).
+
+- One length in the signature: every pointer before it is an array of that many
+  elements. The first one owns the count — the engine grows or shrinks it and the
+  driver passes its `size()` at the count's original position. The other pointers
+  are shared buffers: they keep their own fuzzed contents and the driver grows them
+  to at least the owner's size at call time.
+- Several lengths: each pointer pairs with the adjacent count that follows it
+  (`ids`/`n` and `bits`/`n_words` in a bitmap API), and pointers before the first
+  pair share the first count the same way.
+- A shared buffer written before the owner's position is treated as a scatter
+  destination: it is grown to the largest index the owner's elements contain, so a
+  fuzzed `ids` value cannot drive a write past the end. A byte buffer after the
+  count is treated as an output buffer and gets slack beyond the count, because
+  encoders write more bytes than they read.
+
+Pointers that follow a count and are not byte pointers stay scalar out-parameters
+(`uint64_t* gt` receives one result, not an array). The count parameter itself is
+dropped from the descriptor: the engine fuzzes array lengths, never a copy of one.
+
 ## Author
 
 Build, test, and validate:

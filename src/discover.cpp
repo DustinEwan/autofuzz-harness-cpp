@@ -252,9 +252,17 @@ std::vector<std::string> param_names(CXCursor fn) {
 }
 
 bool is_length_name(const std::string& n) {
-    static const char* names[] = {"n", "len", "length", "count", "size", "numel", "nelem", "nbytes", "bytes"};
-    for (const char* c : names)
-        if (n == c) return true;
+    static const char* names[] = {"n", "len", "length", "count", "size", "numel", "nelem",
+                                  "nbytes", "bytes"};
+    // Exact or underscore-component match: n, n_words, buf_len, out_size.
+    for (std::size_t start = 0; start <= n.size();) {
+        std::size_t end = n.find('_', start);
+        if (end == std::string::npos) end = n.size();
+        std::string comp = n.substr(start, end - start);
+        for (const char* c : names)
+            if (comp == c) return true;
+        start = end + 1;
+    }
     return false;
 }
 
@@ -333,6 +341,43 @@ ParamOutcome build_param(CXType type, const std::string& name, bool buffer,
     ParamOutcome po;
     po.param.name = name;
     if (buffer) {
+        CXType pe = clang_getCanonicalType(clang_getPointeeType(clang_getCanonicalType(type)));
+        bool byteLike = pe.kind == CXType_Void || pe.kind == CXType_Char_S ||
+                        pe.kind == CXType_Char_U || pe.kind == CXType_SChar ||
+                        pe.kind == CXType_UChar;
+        if (!byteLike) {
+            // Typed array parameter: a std::vector<T> passed as data() with
+            // the folded count. The node is a collection so the engine can
+            // fuzz the elements; the length is derived from the vector.
+            LowerResult lr = lower_type(clang_getPointeeType(type), ctx);
+            if (lr.status == LowerResult::Status::Refuse) {
+                po.refuse = true;
+                po.detail = lr.detail;
+                return po;
+            }
+            if (lr.status == LowerResult::Status::Opaque) {
+                po.opaque = true;
+                po.detail = lr.detail;
+                po.blocker = lr.blockerTy;
+                return po;
+            }
+            auto b = std::make_shared<Build>();
+            b->kind = Build::Kind::Seq;
+            b->localType = "std::vector<" + strip_qual(type_spelling(pe)) + ">";
+            b->spelled = type_spelling(type);
+            b->pointee = strip_qual(type_spelling(pe));
+            b->elem = lr.build;
+            po.param.build = b;
+            po.param.node = json{{"kind", "collection"},
+                                 {"collection", "array"},
+                                 {"type", lr.node},
+                                 {"length", {{"min", 0}, {"max", 64}}}};
+            po.param.pass = Pass::Buffer;
+            po.param.lengthType = lengthType;
+            po.param.mutableOut = !clang_isConstQualifiedType(clang_getPointeeType(type));
+            po.ok = true;
+            return po;
+        }
         auto b = std::make_shared<Build>();
         b->kind = Build::Kind::BufferPtr;
         b->localType = "std::vector<std::uint8_t>";
@@ -408,14 +453,68 @@ void classify(ParsedFile& f, Classifier& cl) {
             if (names[i].empty()) names[i] = "arg" + std::to_string(i);
         std::vector<bool> isBuffer(argc, false), dropped(argc, false);
         std::vector<std::string> lengthType(argc);
-        for (unsigned i = 0; i + 1 < argc; ++i) {
-            CXType t = clang_getArgType(fnType, i);
-            CXType nx = clang_getCanonicalType(clang_getArgType(fnType, i + 1));
-            if (byte_or_void_pointer(t) && integral_kind(nx.kind) && is_length_name(names[i + 1])) {
-                isBuffer[i] = true;
-                dropped[i + 1] = true;
-                lengthType[i] = type_spelling(nx);
+        // A pointer to a non-function, non-void type is an array candidate.
+        auto foldable_pointer = [](CXType t) {
+            CXType canon = clang_getCanonicalType(t);
+            if (canon.kind != CXType_Pointer) return false;
+            CXType pe = clang_getCanonicalType(clang_getPointeeType(canon));
+            return pe.kind != CXType_FunctionProto && pe.kind != CXType_Void;
+        };
+        // Candidate count parameters: integral and length-named.
+        std::vector<unsigned> lens;
+        for (unsigned i = 0; i < argc; ++i)
+            if (integral_kind(clang_getCanonicalType(clang_getArgType(fnType, i)).kind) &&
+                is_length_name(names[i]))
+                lens.push_back(i);
+        auto take_length = [&](unsigned ptr, unsigned len) {
+            isBuffer[ptr] = true;
+            if (!dropped[len]) {
+                dropped[len] = true;
+                lengthType[ptr] = type_spelling(clang_getArgType(fnType, len));
             }
+        };
+        struct DerivedInsert { unsigned posArg; std::string castType; unsigned ownerArg; };
+        std::vector<DerivedInsert> derivedInserts;
+        if (lens.size() == 1) {
+            // One count for the whole signature: every pointer before it is
+            // an array of that many elements. The first one owns the count
+            // argument; the others are padded to the owner's size at the
+            // call. Byte pointers after the count are output buffers and
+            // are padded too; anything else after it is a scalar
+            // out-parameter and keeps its lowering.
+            unsigned L = lens[0];
+            unsigned ownerIdx = 0;
+            bool owner = false;
+            for (unsigned i = 0; i < L; ++i) {
+                if (!foldable_pointer(clang_getArgType(fnType, i))) continue;
+                if (!owner) { take_length(i, L); owner = true; ownerIdx = i; }
+                else isBuffer[i] = true;
+            }
+            if (owner)
+                derivedInserts.push_back({L, type_spelling(clang_getArgType(fnType, L)), ownerIdx});
+            for (unsigned i = L + 1; i < argc; ++i)
+                if (byte_or_void_pointer(clang_getArgType(fnType, i))) isBuffer[i] = true;
+        } else {
+            // Several counts: pair each pointer with its own adjacent one
+            // (bitmap_marks's ids/n and bits/n_words), and share the first
+            // count with the pointers before it.
+            for (unsigned i = 0; i + 1 < argc; ++i) {
+                CXType t = clang_getArgType(fnType, i);
+                CXType nx = clang_getCanonicalType(clang_getArgType(fnType, i + 1));
+                if ((byte_or_void_pointer(t) || foldable_pointer(t)) && integral_kind(nx.kind) &&
+                    is_length_name(names[i + 1]) && !dropped[i + 1]) {
+                    take_length(i, i + 1);
+                    derivedInserts.push_back({i + 1, type_spelling(nx), i});
+                }
+            }
+            int firstFold = -1;
+            for (unsigned i = 0; i < argc; ++i)
+                if (isBuffer[i]) { firstFold = (int)i; break; }
+            if (firstFold >= 0)
+                for (int i = 0; i < firstFold; ++i)
+                    if (!isBuffer[i] && !dropped[i] &&
+                        foldable_pointer(clang_getArgType(fnType, i)))
+                        isBuffer[i] = true;
         }
 
         // 2. unsupported-signature.
@@ -459,6 +558,24 @@ void classify(ParsedFile& f, Classifier& cl) {
                 params.push_back(std::move(po.param));
             }
         }
+        // Shared buffers take the owner's size at call time; the thunk names
+        // the locals p0..pN, so the owner's local is its index in params.
+        int padOwner = -1;
+        for (size_t i = 0; i < params.size(); ++i)
+            if (params[i].pass == Pass::Buffer && !params[i].lengthType.empty()) {
+                padOwner = (int)i;
+                break;
+            }
+        if (padOwner >= 0)
+            for (size_t i = 0; i < params.size(); ++i) {
+                Param& q = params[i];
+                if (q.pass != Pass::Buffer || !q.lengthType.empty()) continue;
+                q.padToVar = "p" + std::to_string(padOwner);
+                // A shared buffer before the owner is a scatter destination
+                // indexed by the owner's elements; after it, an output buffer
+                // whose required size can exceed the count.
+                q.padMode = i < static_cast<size_t>(padOwner) ? 1u : 2u;
+            }
         if (refused) {
             add_skip(cl, c, kSkipUnsupportedSignature, refuseDetail);
             continue;
@@ -485,6 +602,21 @@ void classify(ParsedFile& f, Classifier& cl) {
         }
         t.isMethod = c.isMethod && !c.isStaticMethod;
         t.params = std::move(params);
+        // A folded count is passed at its original position, derived from the
+        // owner buffer's length. params index = receiver offset + count of
+        // kept arguments before the original position.
+        {
+            unsigned base = t.isMethod ? 1u : 0u;
+            auto paramIndexOf = [&](unsigned argIdx) {
+                unsigned idx = base;
+                for (unsigned i = 0; i < argIdx; ++i)
+                    if (!dropped[i]) ++idx;
+                return static_cast<std::size_t>(idx);
+            };
+            for (const auto& di : derivedInserts)
+                t.derived.push_back({paramIndexOf(di.posArg), di.castType,
+                                     paramIndexOf(di.ownerArg)});
+        }
         // module: the namespace path of the qualified name (drop the symbol,
         // and the class for methods).
         {

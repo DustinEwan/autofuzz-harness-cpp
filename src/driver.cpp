@@ -386,12 +386,20 @@ std::string pass_expr(const Param& p, const std::string& var) {
     switch (p.pass) {
     case Pass::Buffer: {
         const std::string& pe = p.build->pointee;
-        std::string ptr = pe == "void" ? "static_cast<void*>(" + var + ".data())"
-                                       : "reinterpret_cast<" + pe + "*>(" + var + ".data())";
-        // The length parameter was folded into this one at discovery; it is
-        // derived from the buffer, never from the arguments.
-        if (!p.lengthType.empty())
-            ptr += ", static_cast<" + p.lengthType + ">(" + var + ".size())";
+        std::string ptr;
+        if (!p.padToVar.empty()) {
+            std::string want = p.padToVar + ".size()";
+            if (p.padMode == 1) want = "afz::afz_span(" + p.padToVar + ")";
+            else if (p.padMode == 2)
+                want = p.padToVar + ".size() + " + p.padToVar + ".size() / 2 + 32";
+            ptr = "reinterpret_cast<" + pe + "*>(afz::pad_to(" + var + ", " + want + "))";
+        } else if (pe == "void") {
+            ptr = "static_cast<void*>(" + var + ".data())";
+        } else {
+            ptr = "reinterpret_cast<" + pe + "*>(" + var + ".data())";
+        }
+        // The folded count is passed at its original position from
+        // Tgt::derived, never appended here.
         return ptr;
     }
     case Pass::CStrConst:
@@ -428,10 +436,20 @@ void emit_thunk(std::ostream& os, const Tgt& t, int index) {
     std::string call;
     // A method thunk builds the receiver as p0; the argument list starts
     // after it.
+    std::size_t dnext = 0;
+    auto drain_derived = [&](std::size_t upto) {
+        for (; dnext < t.derived.size() && t.derived[dnext].pos <= upto; ++dnext) {
+            if (!call.empty()) call += ", ";
+            call += "static_cast<" + t.derived[dnext].castType + ">(p" +
+                    std::to_string(t.derived[dnext].ownerParam) + ".size())";
+        }
+    };
     for (std::size_t i = t.isMethod ? 1 : 0; i < n; ++i) {
+        drain_derived(i);
         if (!call.empty()) call += ", ";
         call += pass_expr(t.params[i], "p" + std::to_string(i));
     }
+    drain_derived(n);
     std::string expr = t.isMethod ? "p0." + t.callPath + "(" + call + ")"
                                   : t.callPath + "(" + call + ")";
 

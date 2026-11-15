@@ -31,6 +31,17 @@ struct Param {
     Pass pass = Pass::Value;
     bool mutableOut = false; // appears in the `ok` value object when mutated
     std::string lengthType;  // Buffer: C++ type of the folded length parameter
+    std::string padToVar;    // Buffer: another parameter's local whose size
+                             // bounds this shared buffer at call time
+    unsigned padMode = 0;    // shared: 1 = span of an index vector, 2 = slack
+};
+
+// A folded count argument: passed at its original position, derived from the
+// owner buffer's length.
+struct DerivedArg {
+    std::size_t pos = 0;        // insert before params[pos]
+    std::string castType;       // C++ type of the original count parameter
+    std::size_t ownerParam = 0; // params index of the buffer holding the count
 };
 
 struct Tgt {
@@ -47,6 +58,7 @@ struct Tgt {
     bool returnsVoid = false;
     bool returnsOptional = false; // std::optional return: empty -> `rejected`
     json descriptor;              // the full descriptor, ready to serialize
+    std::vector<DerivedArg> derived; // folded counts, ascending by pos
 };
 
 struct UniverseEntry {

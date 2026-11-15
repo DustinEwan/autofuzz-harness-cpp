@@ -39,6 +39,26 @@ inline std::string afz_dump(const json& v) {
     return v.dump(-1, ' ', false, json::error_handler_t::replace);
 }
 
+// Grow a shared buffer to the count the callee will index with; the engine
+// fuzzes each array's length independently, the API promises one shared one.
+template <class V>
+typename V::value_type* pad_to(V& v, std::size_t n) {
+    if (v.size() < n) v.resize(n);
+    return v.data();
+}
+
+// Bytes (or elements) needed to index by every element of an index vector,
+// at least the vector's own length, capped so a fuzzed huge index cannot
+// request an absurd allocation.
+template <typename T> std::size_t afz_span(const std::vector<T>& v) {
+    std::size_t m = v.size();
+    for (const T& x : v) {
+        long long ll = static_cast<long long>(x);
+        if (ll >= 0 && static_cast<std::size_t>(ll) + 1 > m)
+            m = static_cast<std::size_t>(ll) + 1;
+    }
+    return m > (1u << 20) ? (1u << 20) : m;
+}
 inline std::string show(const json& v) {
     std::string text = afz_dump(v);
     if (text.size() > 120) text = text.substr(0, 120) + "...";
