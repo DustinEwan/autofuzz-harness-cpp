@@ -169,7 +169,7 @@ inline bool b_of(const json& v) {
 }
 
 // JSON has no token for the non-finite values; the wire carries them by name
-// ("nan", "infinity", "negativeInfinity", matching the engine's SpecialNumber).
+// ("naN", "infinity", "negativeInfinity", matching the engine's SpecialNumber).
 inline double f_of(const json& v) {
     const json& x = node_of(v);
     if (x.is_number()) return x.get<double>();
@@ -269,7 +269,7 @@ inline json vt_uint(T x) {
     return json{{"node", "bigInt"}, {"value", std::to_string(static_cast<unsigned long long>(x))}};
 }
 inline json vt_double(double d) {
-    if (d != d) return json{{"node", "number"}, {"value", "nan"}};
+    if (d != d) return json{{"node", "number"}, {"value", "naN"}};
     if (d > 1.7976931348623157e308) return json{{"node", "number"}, {"value", "infinity"}};
     if (d < -1.7976931348623157e308) return json{{"node", "number"}, {"value", "negativeInfinity"}};
     return json{{"node", "number"}, {"value", d}};

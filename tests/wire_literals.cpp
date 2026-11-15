@@ -106,6 +106,18 @@ void check_rt_header() {
             ++failures;
         }
     }
+    // docs/schema/afz-1/value-tree.json $defs.SpecialNumber: a non-finite
+    // double travels by name, and the engine rejects any other spelling, so
+    // vt_double must emit exactly these three tokens.
+    const char* specials[] = {"naN", "infinity", "negativeInfinity"};
+    for (const char* tok : specials) {
+        const std::string pair = std::string("{\"value\", \"") + tok + "\"}";
+        if (rt.find(pair) == std::string::npos) {
+            std::fprintf(stderr, "FAIL rt-header: vt_double does not emit %s\n",
+                         pair.c_str());
+            ++failures;
+        }
+    }
 }
 
 // The object and tuple encoders are generated into the call file by
